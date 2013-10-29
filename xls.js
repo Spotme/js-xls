@@ -2,6 +2,10 @@
 /*jshint eqnull:true, funcscope:true */
 var XLS = {};
 (function(XLS){
+if(typeof require !== 'undefined') {
+	if(typeof cptable === 'undefined') var cptable = require('codepage');
+	var current_codepage = 1252, current_cptable = cptable[1252];
+}
 /* Buffer.concat was added in the 0.8 series, so this is for older versions */
 if(typeof Buffer !== "undefined" && !Buffer.concat)
 Buffer.concat = function(list, length) {
@@ -105,7 +109,29 @@ if(typeof Buffer !== "undefined") {
 	Buffer.prototype.hexlify= function() { return this.toString('hex'); };
 	Buffer.prototype.utf16le= function(s,e){return this.toString('utf16le',s,e).replace(/\u0000/,'').replace(/[\u0001-\u0006]/,'!');};
 	Buffer.prototype.utf8 = function(s,e) { return this.toString('utf8',s,e); };
-	Buffer.prototype.lpstr = function(i) { var len = this.readUInt32LE(i); return this.utf8(i+4,i+4+len-1);};
+	Buffer.prototype.lpstr = function(i) { var len = this.readUInt32LE(i); return len > 0 ? this.utf8(i+4,i+4+len-1) : "";};
+	Buffer.prototype.lpwstr = function(i) { var len = 2*this.readUInt32LE(i); return this.utf8(i+4,i+4+len-1);};
+	if(typeof cptable !== "undefined") Buffer.prototype.lpstr = function(i) {
+		var len = this.readUInt32LE(i);
+		if(len === 0) return "";
+		if(typeof current_cptable === "undefined") return this.utf8(i+4,i+4+len-1);
+		var t = Array(this.slice(i+4,i+4+len-1));
+		//1console.log("start", this.l, len, t);
+		var c, j = i+4, o = "", cc;
+		for(;j!=i+4+len;++j) {
+			c = this.readUInt8(j);
+			cc = current_cptable.dec[c];
+			if(typeof cc === 'undefined') {
+				c = c*256 + this.readUInt8(++j);
+				cc = current_cptable.dec[c];
+			}
+			if(typeof cc === 'undefined') throw "Unrecognized character " + c.toString(16);
+			if(c === 0) break;
+			o += cc;
+		//1console.log(cc, cc.charCodeAt(0), o, this.l);
+		}
+		return o;
+	};
 }
 
 Array.prototype.readUInt8 = function(idx) { return this[idx]; };
@@ -122,6 +148,7 @@ Array.prototype.utf16le = function(s,e) { var str = ""; for(var i=s; i<e; i+=2) 
 Array.prototype.utf8 = function(s,e) { var str = ""; for(var i=s; i<e; i++) str += String.fromCharCode(this.readUInt8(i)); return str; };
 
 Array.prototype.lpstr = function(i) { var len = this.readUInt32LE(i); return this.utf8(i+4,i+4+len-1);};
+Array.prototype.lpwstr = function(i) { var len = 2*this.readUInt32LE(i); return this.utf8(i+4,i+4+len-1);};
 
 function bconcat(bufs) { return (typeof Buffer !== 'undefined') ? Buffer.concat(bufs) : [].concat.apply([], bufs); }
 
@@ -141,6 +168,8 @@ function ReadShift(size, t) {
 
 		/* [MS-OLEDS] 2.1.4 LengthPrefixedAnsiString */
 		case 'lpstr': o = this.lpstr(this.l); size = 5 + o.length; break;
+
+		case 'lpwstr': o = this.lpwstr(this.l); size = 5 + o.length; if(o[o.length-1] == '\u0000') size += 2; break;
 
 		/* sbcs and dbcs support continue records in the SST way TODO codepages */
 		/* TODO: DBCS http://msdn.microsoft.com/en-us/library/cc194788.aspx */
@@ -494,14 +523,14 @@ var DocSummaryPIDDSI = {
 /* [MS-OSHARED] 2.3.3.2.1.1 Summary Information Property Set PIDSI */
 var SummaryPIDSI = {
 	0x01: { n: 'CodePage', t: VT_I2 },
-	0x02: { n: 'Title', t: VT_LPSTR },
-	0x03: { n: 'Subject', t: VT_LPSTR },
-	0x04: { n: 'Author', t: VT_LPSTR },
-	0x05: { n: 'Keywords', t: VT_LPSTR },
-	0x06: { n: 'Comments', t: VT_LPSTR },
-	0x07: { n: 'Template', t: VT_LPSTR },
-	0x08: { n: 'LastAuthor', t: VT_LPSTR },
-	0x09: { n: 'RevNumber', t: VT_LPSTR },
+	0x02: { n: 'Title', t: VT_STRING },
+	0x03: { n: 'Subject', t: VT_STRING },
+	0x04: { n: 'Author', t: VT_STRING },
+	0x05: { n: 'Keywords', t: VT_STRING },
+	0x06: { n: 'Comments', t: VT_STRING },
+	0x07: { n: 'Template', t: VT_STRING },
+	0x08: { n: 'LastAuthor', t: VT_STRING },
+	0x09: { n: 'RevNumber', t: VT_STRING },
 	0x0A: { n: 'EditTime', t: VT_FILETIME },
 	0x0B: { n: 'LastPrinted', t: VT_FILETIME },
 	0x0C: { n: 'CreateTime', t: VT_FILETIME },
@@ -531,6 +560,15 @@ function parse_lpstr(blob, type, pad) {
 	if(pad) blob.l += (4 - ((str.length+1) % 4)) % 4;
 	return str;
 }
+
+/* [MS-OSHARED] 2.3.3.1.6 Lpwstr */
+function parse_lpwstr(blob, type, pad) {
+	var read = ReadShift.bind(blob), chk = CheckField.bind(blob);
+	var str = read('lpwstr');
+	if(pad) blob.l += (4 - ((str.length+1) % 4)) % 4;
+	return str;
+}
+
 
 /* [MS-OSHARED] 2.3.3.1.11 VtString */
 /* [MS-OSHARED] 2.3.3.1.12 VtUnalignedString */
@@ -621,7 +659,7 @@ function parse_VtVector(blob, cb) {
 	for(var i = 0; i != Length; ++i) {
 		o.push(cb(blob));
 	}
-	return o;	
+	return o;
 }
 
 /* [MS-OLEPS] 2.15 TypedPropertyValue */
@@ -685,7 +723,7 @@ function parse_PropertySet(blob, PIDSI) {
 				case 874: // SB Windows Thai
 				case 1250: // SB Windows Central Europe
 				case 1251: // SB Windows Cyrillic
-				case 1253: // SB Windows Greek 
+				case 1253: // SB Windows Greek
 				case 1254: // SB Windows Turkish
 				case 1255: // SB Windows Hebrew
 				case 1256: // SB Windows Arabic
@@ -699,8 +737,8 @@ function parse_PropertySet(blob, PIDSI) {
 				case 1201: // UTF16BE
 				case 65000: case -536: // UTF-7
 				case 65001: case -535: // UTF-8
-				/* falls through */
-				default: console.error("Unsupported CodePage: " + PropH[piddsi.n]);
+					break;
+				default: throw new Error("Unsupported CodePage: " + PropH[piddsi.n]);
 			}
 		} else {
 			if(Props[i][0] === 0x1) {
@@ -717,9 +755,17 @@ function parse_PropertySet(blob, PIDSI) {
 			} else {
 				var name = DictObj[Props[i][0]];
 				var val;
+				/* [MS-OSHARED] 2.3.3.2.3.1.2 + PROPVARIANT */
 				switch(blob[blob.l]) {
-					//TODO
 					case VT_BLOB: blob.l += 4; val = parse_BLOB(blob); break;
+					case VT_LPSTR: blob.l += 4; val = parse_VtString(blob, blob[blob.l-4]); break;
+					case VT_LPWSTR: blob.l += 4; val = parse_VtString(blob, blob[blob.l-4]); break;
+					case VT_I4: blob.l += 4; val = read(4, 'i'); break;
+					case VT_UI4: blob.l += 4; val = read(4); break;
+					case VT_R8: blob.l += 4; val = read(8, 'f'); break;
+					case VT_BOOL: blob.l += 4; val = parsebool(blob, 4); break;
+					case VT_FILETIME: blob.l += 4; val = parse_FILETIME(blob); break;
+					default: throw new Error("unparsed value: " + blob[blob.l]);
 				}
 				PropH[name] = val;
 			}
@@ -761,7 +807,8 @@ function parse_PropertySetStream(file, PIDSI) {
 	return rval;
 }
 /* [MS-CFB] v20130118 */
-var CFB = (function(){
+if(typeof require !== "undefined") CFB = require('cfb');
+else var CFB = (function(){
 var exports = {};
 function parse(file) {
 
@@ -868,12 +915,10 @@ for(j = 0; blob.l != 512; ) {
 
 
 /** Break the file up into sectors */
-if(file.length%ssz!==0) console.error("CFB: size " + file.length + " % "+ssz);
-
 var nsectors = Math.ceil((file.length - ssz)/ssz);
 var sectors = [];
 for(var i=1; i != nsectors; ++i) sectors[i-1] = file.slice(i*ssz,(i+1)*ssz);
-sectors[nsectors-1] = file.slice((nsectors)*ssz);
+sectors[nsectors-1] = file.slice(nsectors*ssz);
 
 /** Chase down the rest of the DIFAT chain to build a comprehensive list
     DIFAT chains by storing the next sector number as the last 32 bytes */
@@ -882,12 +927,14 @@ function sleuth_fat(idx, cnt) {
 		if(cnt !== 0) throw "DIFAT chain shorter than expected";
 		return;
 	}
-	var sector = sectors[idx];
-	for(var i = 0; i != ssz/4-1; ++i) {
-		if((q = sector.readUInt32LE(i*4)) === ENDOFCHAIN) break;
-		fat_addrs.push(q);
+	if(idx !== FREESECT) {
+		var sector = sectors[idx];
+		for(var i = 0; i != ssz/4-1; ++i) {
+			if((q = sector.readUInt32LE(i*4)) === ENDOFCHAIN) break;
+			fat_addrs.push(q);
+		}
+		sleuth_fat(sector.readUInt32LE(ssz-4),cnt - 1);
 	}
-	sleuth_fat(sector.readUInt32LE(ssz-4),cnt - 1);
 }
 sleuth_fat(difat_start, ndfs);
 
@@ -909,18 +956,18 @@ function get_next_sector(idx) { return get_buffer_u32(idx); }
 var chkd = new Array(sectors.length), sector_list = [];
 var get_sector = function get_sector(k) { return sectors[k]; };
 for(i=0; i != sectors.length; ++i) {
-	var buf = [];
-	if(chkd[i]) continue;
-	for(j=i; j<=MAXREGSECT; buf.push(j),j=get_next_sector(j)) chkd[j] = true;
-	sector_list[i] = {nodes: buf};
-	sector_list[i].data = Buffers(buf.map(get_sector)).toBuffer();
+	var buf = [], k = (i + dir_start) % sectors.length;
+	if(chkd[k]) continue;
+	for(j=k; j<=MAXREGSECT; buf.push(j),j=get_next_sector(j)) chkd[j] = true;
+	sector_list[k] = {nodes: buf};
+	sector_list[k].data = Buffers(buf.map(get_sector)).toBuffer();
 }
 sector_list[dir_start].name = "!Directory";
-if(nmfs > 0) sector_list[minifat_start].name = "!MiniFAT";
+if(nmfs > 0 && minifat_start !== ENDOFCHAIN) sector_list[minifat_start].name = "!MiniFAT";
 sector_list[fat_addrs[0]].name = "!FAT";
 
-/** read directory structure */
-var files = {}, Paths = [];
+/* [MS-CFB] 2.6.1 Compound File Directory Entry */
+var files = {}, Paths = [], FileIndex = [], FullPaths = [], FullPathDir = {};
 function read_directory(idx) {
 	var blob, read, w;
 	var sector = sector_list[idx].data;
@@ -940,13 +987,13 @@ function read_directory(idx) {
 		o.child = read(4); if(o.child === NOSTREAM) delete o.child;
 		o.clsid = read(16);
 		o.state = read(4);
-		o.ctime = read(8);
-		o.mtime = read(8);
+		var ctime = read(8); if(ctime != "0000000000000000") o.ctime = ctime;
+		var mtime = read(8); if(mtime != "0000000000000000") o.mtime = mtime;
 		o.start = read(4);
 		o.size = read(4);
 		if(o.type === 'root') { //root entry
 			minifat_store = o.start;
-			if(nmfs > 0) sector_list[minifat_store].name = "!StreamData";
+			if(nmfs > 0 && minifat_store !== ENDOFCHAIN) sector_list[minifat_store].name = "!StreamData";
 			minifat_size = o.size;
 		} else if(o.size >= ms_cutoff_size) {
 			o.storage = 'fat';
@@ -954,29 +1001,75 @@ function read_directory(idx) {
 				sector_list[o.start].name = o.name;
 				o.content = sector_list[o.start].data.slice(0,o.size);
 			} catch(e) {
-				o.start = o.start - 1; 
-			sector_list[o.start].name = o.name;
-			o.content = sector_list[o.start].data.slice(0,o.size);
+				o.start = o.start - 1;
+				sector_list[o.start].name = o.name;
+				o.content = sector_list[o.start].data.slice(0,o.size);
 			}
 			prep_blob(o.content);
 		} else {
 			o.storage = 'minifat';
 			w = o.start * mssz;
-			o.content = sector_list[minifat_store].data.slice(w,w+o.size);
-			prep_blob(o.content);
+			if(minifat_store !== ENDOFCHAIN && o.start !== ENDOFCHAIN) {
+				o.content = sector_list[minifat_store].data.slice(w,w+o.size);
+				prep_blob(o.content);
+			}
+		}
+		if(o.ctime) {
+			var ct = blob.slice(blob.l-24, blob.l-16);
+			var c2 = (ct.readUInt32LE(4)/1e7)*Math.pow(2,32)+ct.readUInt32LE(0)/1e7;
+			o.ct = new Date((c2 - 11644473600)*1000);
+		}
+		if(o.mtime) {
+			var mt = blob.slice(blob.l-16, blob.l-8);
+			var m2 = (mt.readUInt32LE(4)/1e7)*Math.pow(2,32)+mt.readUInt32LE(0)/1e7;
+			o.mt = new Date((m2 - 11644473600)*1000);
 		}
 		files[name] = o;
+		FileIndex.push(o);
 	}
 }
 read_directory(dir_start);
 
-var root_name = Paths.shift();
+function build_full_paths(Dir, pathobj, paths, patharr) {
+	var i;
+	var dad = new Array(patharr.length);
 
-if(files.VBA) console.error("VBA will not be processed");
+	var q = new Array(patharr.length);
+
+	for(i=0; i != dad.length; ++i) { dad[i]=q[i]=i; paths[i]=patharr[i]; }
+
+	for(i = q[0]; typeof i !== "undefined"; i = q.shift()) {
+		if(Dir[i].child) dad[Dir[i].child] = i;
+		if(Dir[i].left) { dad[Dir[i].left] = dad[i]; q.push(Dir[i].left); }
+		if(Dir[i].right) { dad[Dir[i].right] = dad[i]; q.push(Dir[i].right); }
+	}
+
+	for(i=1; i !== paths.length; ++i) {
+		if(Dir[i].type === "unknown") continue;
+		var j = dad[i];
+		if(j === 0) paths[i] = paths[0] + "/" + paths[i];
+		else while(j !== 0) {
+			paths[i] = paths[j] + "/" + paths[i];
+			j = dad[j];
+		}
+		dad[i] = 0;
+	}
+
+	paths[0] += "/";
+	for(i=1; i !== paths.length; ++i) if(Dir[i].type !== 'stream') paths[i] += "/";
+	for(i=0; i !== paths.length; ++i) pathobj[paths[i]] = FileIndex[i];
+}
+build_full_paths(FileIndex, FullPathDir, FullPaths, Paths);
+
+var root_name = Paths.shift();
+Paths.root = root_name;
 
 var rval = {
 	raw: {header: header, sectors: sectors},
 	Paths: Paths,
+	FileIndex: FileIndex,
+	FullPaths: FullPaths,
+	FullPathDir: FullPathDir,
 	Directory: files
 };
 
@@ -1019,18 +1112,20 @@ return exports;
 
 /** CFB Constants */
 {
+	/* 2.1 Compund File Sector Numbers and Types */
 	var MAXREGSECT = 0xFFFFFFFA;
 	var DIFSECT = 0xFFFFFFFC;
 	var FATSECT = 0xFFFFFFFD;
 	var ENDOFCHAIN = 0xFFFFFFFE;
 	var FREESECT = 0xFFFFFFFF;
+	/* 2.2 Compound File Header */
 	var HEADER_SIGNATURE = 'd0cf11e0a1b11ae1';
 	var HEADER_MINOR_VERSION = '3e00';
 	var MAXREGSID = 0xFFFFFFFA;
 	var NOSTREAM = 0xFFFFFFFF;
 	var HEADER_CLSID = '00000000000000000000000000000000';
-
-	var EntryTypes = ['unknown','storage','stream',null,null,'root'];
+	/* 2.6.1 Compound File Directory Entry */
+	var EntryTypes = ['unknown','storage','stream','lockbytes','property','root'];
 }
 
 if(typeof require !== 'undefined' && typeof exports !== 'undefined') {
@@ -1134,6 +1229,7 @@ function parse_XLUnicodeStringNoCch(blob, cch) {
 /* 2.5.294 XLUnicodeString */
 function parse_XLUnicodeString(blob) {
 	var cch = blob.read_shift(2);
+	if(cch === 0) { blob.l++; return ""; }
 	return parse_XLUnicodeStringNoCch(blob, cch);
 }
 
@@ -1246,7 +1342,8 @@ function parse_InterfaceHdr(blob, length) {
 
 
 /* 2.4.349 */
-function parse_WriteAccess(blob, length) {
+function parse_WriteAccess(blob, length, opts) {
+	if(opts.enc) { blob.l += length; return ""; }
 	var l = blob.l;
 	// TODO: make sure XLUnicodeString doesnt overrun
 	var UserName = parse_XLUnicodeString(blob);
@@ -1438,18 +1535,19 @@ function parse_SupBook(blob, length, opts) {
 function parse_ExternName(blob, length, opts) {
 	var flags = blob.read_shift(2);
 	var body;
-	if(opts.sbcch === 0x3A01) body = parse_AddinUdf(blob, length-2);
-	else throw "unsupported SupBook cch: " + opts.sbcch;
-	return {
+	var o = {
 		fBuiltIn: flags & 0x01,
 		fWantAdvise: (flags >>> 1) & 0x01,
 		fWantPict: (flags >>> 2) & 0x01,
 		fOle: (flags >>> 3) & 0x01,
 		fOleLink: (flags >>> 4) & 0x01,
 		cf: (flags >>> 5) & 0x3FF,
-		fIcon: flags >>> 15 & 0x01,
-		body: body
+		fIcon: flags >>> 15 & 0x01
 	};
+	if(opts.sbcch === 0x3A01) body = parse_AddinUdf(blob, length-2);
+	//else throw new Error("unsupported SupBook cch: " + opts.sbcch);
+	o.body = blob.read_shift(length-2);
+	return o;
 }
 
 /* 2.4.150 TODO */
@@ -1887,7 +1985,10 @@ function parse_RC4Header(blob, length) {
 }
 
 /* 2.5.343 */
-function parse_XORObfuscation(blob, length) { return parsenoop(blob, length); }
+function parse_XORObfuscation(blob, length) {
+	return { key: parseuint16(blob), verificationBytes: parseuint16(blob) };
+}
+
 /* 2.4.117 */
 function parse_FilePassHeader(blob, length, oo) {
 	var o = oo || {}; o.Info = blob.read_shift(2); blob.l -= 2;
@@ -2120,6 +2221,13 @@ function parse_PtgMemArea(blob, length) {
 	return [type, cce];
 }
 
+/* 2.5.198.72 */
+function parse_PtgMemFunc(blob, length) {
+	var type = (blob.read_shift(1) >>> 5) & 0x03;
+	var cce = blob.read_shift(2);
+	return [type, cce];
+}
+
 /* 2.5.198.34 */
 function parse_PtgAttrChoose(blob, length) {
 	blob.l +=2;
@@ -2199,8 +2307,6 @@ var parse_PtgAttrBaxcel = parsenoop;
 var parse_PtgAttrSpaceSemi = parsenoop;
 /* 2.5.198.71 */
 var parse_PtgMemErr = parsenoop;
-/* 2.5.198.72 */
-var parse_PtgMemFunc = parsenoop;
 /* 2.5.198.73 */
 var parse_PtgMemNoMem = parsenoop;
 /* 2.5.198.87 */
@@ -2392,7 +2498,7 @@ function parse_Rgce(blob, length) {
 			id = blob[blob.l + 1];
 			R = (id === 0x18 ? Ptg18 : Ptg19)[id];
 		}
-		if(!R) { ptgs.push(parsenoop(blob, length)); }
+		if(!R || !R.f) { ptgs.push(parsenoop(blob, length)); }
 		else { ptgs.push([R.n, R.f(blob, length)]); }
 	}
 	return ptgs;
@@ -2569,8 +2675,11 @@ function stringify_formula(formula, range, cell, supbooks) {
 			/* 2.5.97.61 TODO: do something different for revisions */
 			case 'PtgNameX':
 				/* f[1] = type, ixti, nameindex */
-				var bookidx = f[1][1]; nameidx = f[1][2];
-				var externbook = supbooks[bookidx+1][nameidx];
+				var bookidx = f[1][1]; nameidx = f[1][2]; var externbook;
+				/* TODO: Properly handle missing values */
+				if(supbooks[bookidx+1]) externbook = supbooks[bookidx+1][nameidx];
+				else if(supbooks[bookidx-1]) externbook = supbooks[bookidx-1][nameidx];
+				if(!externbook) externbook = {body: "??NAMEX??"};
 				stack.push(externbook.body);
 				break;
 
@@ -2598,6 +2707,7 @@ function stringify_formula(formula, range, cell, supbooks) {
 				stack.push("{" + f[1].map(function(x) { return x.map(function(y) { return y[1];}).join(",");}).join(";") + "}");
 				break;
 
+		/* 2.2.2.5 Mem Tokens */
 			/* 2.5.198.70 TODO: confirm this is a non-display */
 			case 'PtgMemArea':
 				//stack.push("(" + f[2].map(encode_range).join(",") + ")");
@@ -2608,6 +2718,26 @@ function stringify_formula(formula, range, cell, supbooks) {
 
 			/* 2.5.198.92 TODO */
 			case 'PtgTbl': break;
+
+			/* 2.5.198.71 */
+			case 'PtgMemErr': break;
+
+			/* 2.5.198.74 */
+			case 'PtgMissArg':
+				stack.push("");
+				break;
+
+			/* 2.5.198.29 TODO */
+			case 'PtgAreaErr': break;
+
+			/* 2.5.198.31 TODO */
+			case 'PtgAreaN': break;
+
+			/* 2.5.198.87 TODO */
+			case 'PtgRefErr3d': break;
+
+			/* 2.5.198.72 */
+			case 'PtgMemFunc': break;
 
 			default: throw 'Unrecognized Formula Token: ' + f;
 		}
@@ -4084,7 +4214,7 @@ function parse_compobj(obj) {
 
 	/* [MS-OLEDS] 2.3.7 CompObjHeader -- All fields MUST be ignored */
 	var l = 28, m;
-	m = o.lpstr(l); l += 5 + m.length; v.UserType = m;
+	m = o.lpstr(l); l += m.length === 0 ? 0 : 5 + m.length; v.UserType = m;
 
 	/* [MS-OLEDS] 2.3.1 ClipboardFormatOrAnsiString */
 	m = o.readUInt32LE(l); l+= 4;
@@ -4096,7 +4226,7 @@ function parse_compobj(obj) {
 			l += m;
 	}
 
-	m = o.lpstr(l); l += 5 + m.length; v.Reserved1 = m;
+	m = o.lpstr(l); l += m.length === 0 ? 0 : 5 + m.length; v.Reserved1 = m;
 
 	if((m = o.readUInt32LE(l)) !== 0x71b2e9f4) return v;
 	throw "Unsupported Unicode Extension";
@@ -4107,6 +4237,9 @@ function parse_xlscfb(cfb) {
 var CompObj = cfb.Directory['!CompObj'];
 var Summary = cfb.Directory['!SummaryInformation'];
 var Workbook = cfb.Directory.Workbook;
+if(!Workbook) Workbook = cfb.Directory.WORKBOOK;
+if(!Workbook) Workbook = cfb.Directory.Book;
+if(!Workbook) Workbook = cfb.Directory.BOOK;
 var CompObjP, SummaryP, WorkbookP;
 
 
@@ -4166,7 +4299,7 @@ function parse_workbook(blob) {
 	var sbc = 0, sbci = 0, sbcli = 0;
 	supbooks.SheetNames = opts.snames;
 	supbooks.sharedf = opts.sharedf;
-	while(blob.l < blob.length) {
+	while(blob.l < blob.length - 1) {
 		var s = blob.l;
 		var RecordType = read(2);
 		if(RecordType === 0) break; /* TODO: can padding occur before EOF ? */
@@ -4187,16 +4320,20 @@ function parse_workbook(blob) {
 				/* Workbook Options */
 				case 'Date1904': wb.opts.Date1904 = val; break;
 				case 'WriteProtect': wb.opts.WriteProtect = true; break;
-				case 'FilePass': opts.enc = val; console.error("File is password-protected -- Cannot extract files (yet)"); break;
+				case 'FilePass': opts.enc = val; if(XLS.verbose >= 2) console.error(val); break;
 				case 'WriteAccess': opts.lastuser = val; break;
 				case 'FileSharing': break; //TODO
-				case 'CodePage': opts.codepage = val; break;
+				case 'CodePage':
+					opts.codepage = val;
+					if(typeof current_codepage !== 'undefined') current_codepage = val;
+					if(typeof current_cptable !== 'undefined') current_cptable = cptable[val];
+					break;
 				case 'RRTabId': opts.rrtabid = val; break;
 				case 'WinProtect': opts.winlocked = val; break;
 				case 'Template': break; // TODO
 				case 'RefreshAll': wb.opts.RefreshAll = val; break;
 				case 'BookBool': break; // TODO
-				case 'UsesELFs': if(val) console.error("Unsupported ELFs"); break;
+				case 'UsesELFs': /* if(val) console.error("Unsupported ELFs"); */ break;
 				case 'MTRSettings': {
 					if(val[0] && val[1]) throw "Unsupported threads: " + val;
 				} break; // TODO: actually support threads
@@ -4258,6 +4395,13 @@ function parse_workbook(blob) {
 				case 'RichTextStream': break;
 				case 'BkHim': break;
 
+				/* Protection */
+				case 'ScenarioProtect': break;
+				case 'ObjProtect': break;
+
+				/* Conditional Formatting */
+				case 'CondFmt12': break;
+
 				/* Table */
 				case 'Table': break; // TODO
 				case 'TableStyles': break; // TODO
@@ -4275,7 +4419,7 @@ function parse_workbook(blob) {
 				case 'DCon': break;
 
 				/* Watched Cell */
-				case 'CellWatch': break; 
+				case 'CellWatch': break;
 
 				/* Print Settings */
 				case 'PrintRowCol': break;
@@ -4292,7 +4436,7 @@ function parse_workbook(blob) {
 				case 'ExternSheet': supbooks[sbc] = supbooks[sbc].concat(val); sbci += val.length; break;
 
 				case 'Protect': out["!protect"] = val; break; /* for sheet or book */
-				case 'Password': if(val !== 0) throw "Password protection unsupported"; break;
+				case 'Password': if(val !== 0) throw new Error("Password protection unsupported: " + val); break;
 				case 'Prot4Rev': case 'Prot4RevPass': break; /*TODO: Revision Control*/
 
 				case 'BoundSheet8': {
@@ -4379,7 +4523,7 @@ function parse_workbook(blob) {
 
 				} break;
 				case 'ObProj': {
-					
+
 				} break;
 				case 'CodeName': {
 
@@ -4422,6 +4566,7 @@ function parse_workbook(blob) {
 				case 'NameCmt': break;
 
 				/* Chart */
+				case 'Dat':
 				case 'Begin': case 'End':
 				case 'StartBlock': case 'EndBlock':
 				case 'Frame': case 'Area':
@@ -4511,7 +4656,7 @@ function parse_workbook(blob) {
 	return wb;
 }
 if(Workbook) WorkbookP = parse_workbook(Workbook.content);
-
+else throw new Error("Cannot find Workbook stream");
 if(CompObj) CompObjP = parse_compobj(CompObj);
 
 return WorkbookP;
