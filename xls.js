@@ -4657,6 +4657,8 @@ function parse_workbook(blob) {
 				case 'Window1': case 'Window2': case 'HideObj': case 'GridSet': case 'Guts':
 				case 'UserBView': case 'UserSViewBegin': case 'UserSViewEnd':
 				case 'Pane':
+				/* Pub Stuff */
+				case 'WebPub': case 'AutoWebPub':
 				/* Print Stuff */
 				case 'RightMargin': case 'LeftMargin': case 'TopMargin': case 'BottomMargin':
 				case 'HeaderFooter': case 'HFPicture': case 'PLV':
@@ -4724,13 +4726,14 @@ function sheet_to_row_object_array(sheet){
 					c: C,
 					r: R
 				})];
+				var v = (val || {}).v;
 				if(val !== undefined) switch(val.t){
 					case 's': case 'str':
-						if(val.v !== undefined) val.v = JSON.parse(val.v);
+						if(v !== undefined) v = JSON.parse(v);
 					/* falls through */
 					case 'b': case 'n':
-						if(val.v !== undefined) {
-							rowObject[columnHeaders[C]] = val.v;
+						if(v !== undefined) {
+							rowObject[columnHeaders[C]] = v;
 							emptyRow = false;
 						}
 						break;
