@@ -4795,6 +4795,65 @@ function sheet_to_row_object_array(sheet){
 	return outSheet;
 }
 
+/**
+ * Convert a sheet into an array of objects where the column headers are indexes, not keys.
+ **/
+function sheet_to_row_object_array_with_column_indexes(sheet){
+	var val, rowObject, range, columnHeaders, emptyRow, C;
+	var outSheet = [];
+	if (sheet["!ref"]) {
+		range = decode_range(sheet["!ref"]);
+
+		columnHeaders = {};
+		for (C = range.s.c; C <= range.e.c; ++C) {
+			val = sheet[encode_cell({
+				c: C,
+				r: range.s.r
+			})];
+			if(val){
+				switch(val.t) {
+					case 'n':
+					case 's':
+					case 'str':
+						columnHeaders[C] = C;
+						break;
+				}
+			}
+		}
+
+		for (var R = range.s.r; R <= range.e.r; ++R) {
+			emptyRow = true;
+			//Row number is recorded in the prototype
+			//so that it doesn't appear when stringified.
+			rowObject = Object.create({ __rowNum__ : R });
+			for (C = range.s.c; C <= range.e.c; ++C) {
+				val = sheet[encode_cell({
+					c: C,
+					r: R
+				})];
+				var v = (val || {}).v;
+				if(val !== undefined) switch(val.t){
+					case 's': case 'str':
+						if(v !== undefined) v = JSON.parse(v);
+					/* falls through */
+					case 'b': case 'n':
+						if(v !== undefined) {
+							rowObject[columnHeaders[C]] = v;
+							emptyRow = false;
+						}
+						break;
+					case 'e': break; /* throw */
+					default: throw 'unrecognized type ' + val.t;
+				}
+			}
+			if(!emptyRow) {
+				outSheet.push(rowObject);
+			}
+		}
+	}
+	return outSheet;
+}
+
 function sheet_to_csv(sheet) {
 	var out = "";
 	if(sheet["!ref"]) {
@@ -4840,7 +4899,8 @@ var utils = {
 	sheet_to_csv: sheet_to_csv,
 	make_csv: sheet_to_csv,
 	get_formulae: get_formulae,
-	sheet_to_row_object_array: sheet_to_row_object_array
+	sheet_to_row_object_array: sheet_to_row_object_array,
+	sheet_to_row_object_array_with_column_indexes: sheet_to_row_object_array_with_column_indexes
 };
 
 function xlsread(f, options) {
